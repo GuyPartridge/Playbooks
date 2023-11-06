@@ -5,7 +5,7 @@ Run this playbook on incidents which contains suspicious AAD activities. When a 
 
 ##Flow
 
-![0-automation](../Prompt-User-Incident-Post-AdaptiveCard/images/picture1.png)
+![0-automation](../Prompt-User-Incident-Post-AdaptiveCard/Images/Picture1.png)
 
 ## Prerequisites
 1. Using the riskyUsers API requires an Azure AD Premium P2 license. 
