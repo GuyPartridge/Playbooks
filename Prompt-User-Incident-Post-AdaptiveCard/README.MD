@@ -48,7 +48,7 @@ New-AzureAdServiceAppRoleAssignment -ObjectId $MI.ObjectId -PrincipalId $MI.Obje
 $AppRole6 = $GraphServicePrincipal.AppRoles | Where-Object {$_.Value -eq $PermissionName6 -and $_.AllowedMemberTypes -contains "Application"}
 New-AzureAdServiceAppRoleAssignment -ObjectId $MI.ObjectId -PrincipalId $MI.ObjectId `
 -ResourceId $GraphServicePrincipal.ObjectId -Id $AppRole6.Id
-
+```
 ## Quick Deployment
 **Deploy with incident trigger** (recommended)
 
