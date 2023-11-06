@@ -1,0 +1,948 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "title": "Prompt-User-Incident-Post-AdaptiveCard",
+        "description": "This playbook is intended to be run from a Microsoft Sentinel incident. It will disable the Azure AD user accounts associated with the entities from Microsoft Sentinel incidents.",
+        "lastUpdateTime": "2023-11-02T11:56:02Z",
+        "entities": [
+            "Account"
+        ],
+        "tags": [
+            "Microsoft Sentinel",
+            "Incident",
+            "Azure Active Directory",
+            "Revoke User",
+            "Prompt User Action",
+            "Post Adaptive Card"
+        ],
+        "support": {
+            "tier": "partner"
+        },
+        "author": {
+            "name": "Microsoft"
+        }
+    },
+    "parameters": {
+        "PlaybookName": {
+            "defaultValue": "Prompt-User-Incident-Post-AdaptiveCard",
+            "type": "string"
+        }
+    },
+    "variables": {
+        "azuread": "[concat('azuread-', parameters('PlaybookName'))]",
+        "azuresentinel": "[concat('azuresentinel-', parameters('PlaybookName'))]",
+		"office365": "[concat('office365-', parameters('PlaybookName'))]",
+        "teams": "[concat('teams-', parameters('PlaybookName'))]"
+    },
+    "resources": [
+		{
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[variables('office365')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "displayName": "[parameters('PlaybookName')]",
+                "customParameterValues": {},
+                "api": {
+                    "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[variables('teams')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "displayName": "[parameters('PlaybookName')]",
+                "customParameterValues": {},
+                "api": {
+                    "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/teams')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[variables('azuread')]",
+            "location": "[resourceGroup().location]",
+            "kind": "V1",
+            "properties": {
+                "displayName": "[parameters('PlaybookName')]",
+                "customParameterValues": {},
+                "api": {
+                    "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuread')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[variables('azuresentinel')]",
+            "location": "[resourceGroup().location]",
+            "kind": "V1",
+            "properties": {
+                "displayName": "[parameters('PlaybookName')]",
+                "customParameterValues": {},
+                "parameterValueType": "Alternative",
+                "api": {
+                    "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2016-06-01",
+            "name": "[parameters('PlaybookName')]",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "LogicAppsCategory": "security"
+            },
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/connections', variables('azuread'))]",
+                "[resourceId('Microsoft.Web/connections', variables('azuresentinel'))]"
+            ],
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "triggers": {
+                      "Microsoft_Sentinel_incident": {
+                        "type": "ApiConnectionWebhook",
+                        "inputs": {
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                            }
+                          },
+                          "body": {
+                            "callback_url": "@{listCallbackUrl()}"
+                          },
+                          "path": "/incident-creation"
+                        }
+                      }
+                    },
+                    "actions": {
+                      "Entities_-_Get_Accounts": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                            }
+                          },
+                          "method": "post",
+                          "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                          "path": "/entities/account"
+                        },
+                        "runAfter": {}
+                      },
+                      "For_each": {
+                        "type": "Foreach",
+                        "foreach": "@body('Entities_-_Get_Accounts')?['Accounts']",
+                        "actions": {
+                          "Add_comment_to_incident_(V3)_4": {
+                            "type": "ApiConnection",
+                            "inputs": {
+                              "host": {
+                                "connection": {
+                                  "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                }
+                              },
+                              "method": "post",
+                              "body": {
+                                "incidentArmId": "@triggerBody()?['object']?['id']",
+                                "message": "<p>The user did not respond to the request or the request was skipped or failed.</p>"
+                              },
+                              "path": "/Incidents/Comment"
+                            },
+                            "runAfter": {
+                              "Condition": [
+                                "TimedOut",
+                                "Skipped",
+                                "Failed"
+                              ]
+                            }
+                          },
+                          "Condition": {
+                            "type": "If",
+                            "expression": {
+                              "and": [
+                                {
+                                  "greater": [
+                                    "@variables('NumberOfUsers')",
+                                    1
+                                  ]
+                                }
+                              ]
+                            },
+                            "actions": {
+                              "Add_task_to_incident_2": {
+                                "type": "ApiConnection",
+                                "inputs": {
+                                  "host": {
+                                    "connection": {
+                                      "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                    }
+                                  },
+                                  "method": "post",
+                                  "body": {
+                                    "incidentArmId": "@triggerBody()?['object']?['id']",
+                                    "taskTitle": "Number of Users Exceeds 1",
+                                    "taskDescription": "<p>The number of users exceeds 1. Investigate manually or trigger a different playbook.</p>"
+                                  },
+                                  "path": "/Incidents/CreateTask"
+                                }
+                              }
+                            },
+                            "else": {
+                              "actions": {
+                                "HTTP": {
+                                  "type": "Http",
+                                  "inputs": {
+                                    "uri": "https://graph.microsoft.com/v1.0/users/@{items('For_each')?['AadUserId']}",
+                                    "method": "GET",
+                                    "authentication": {
+                                      "audience": "https://graph.microsoft.com/",
+                                      "type": "ManagedServiceIdentity"
+                                    }
+                                  }
+                                },
+                                "Parse_JSON": {
+                                  "type": "ParseJson",
+                                  "inputs": {
+                                    "content": "@body('HTTP')",
+                                    "schema": {
+                                      "properties": {
+                                        "@@odata.context": {
+                                          "type": "string"
+                                        },
+                                        "businessPhones": {
+                                          "type": "array"
+                                        },
+                                        "displayName": {
+                                          "type": "string"
+                                        },
+                                        "givenName": {},
+                                        "id": {
+                                          "type": "string"
+                                        },
+                                        "jobTitle": {},
+                                        "mail": {
+                                          "type": "string"
+                                        },
+                                        "mobilePhone": {},
+                                        "officeLocation": {},
+                                        "preferredLanguage": {},
+                                        "surname": {},
+                                        "userPrincipalName": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "type": "object"
+                                    }
+                                  },
+                                  "runAfter": {
+                                    "HTTP": [
+                                      "Succeeded"
+                                    ]
+                                  }
+                                },
+                                "Send_approval_email": {
+                                  "type": "ApiConnectionWebhook",
+                                  "inputs": {
+                                    "host": {
+                                      "connection": {
+                                        "name": "@parameters('$connections')['office365']['connectionId']"
+                                      }
+                                    },
+                                    "body": {
+                                      "NotificationUrl": "@{listCallbackUrl()}",
+                                      "Message": {
+                                        "To": "@body('Parse_JSON')?['mail']",
+                                        "Body": "New Alert from Microsoft Sentinel.\nPlease respond ASAP.\n@{body('Create_Alerts_HTML_table')}\n\nSeverity: @{triggerBody()?['object']?['properties']?['severity']}\nName: @{triggerBody()?['object']?['properties']?['title']}\nDescription: @{triggerBody()?['object']?['properties']?['description']}\nat this time @{triggerBody()?['object']?['properties']?['createdTimeUtc']}",
+                                        "Importance": "High",
+                                        "HideHTMLMessage": false,
+                                        "ShowHTMLConfirmationDialog": true,
+                                        "Subject": "Security Alert: @{triggerBody()?['object']?['properties']?['title']}",
+                                        "Options": "This was me, This was not me"
+                                      }
+                                    },
+                                    "path": "/approvalmail/$subscriptions"
+                                  },
+                                  "runAfter": {
+                                    "Create_Alerts_HTML_table": [
+                                      "SUCCEEDED"
+                                    ]
+                                  },
+                                  "limit": {
+                                    "timeout": "PT1H"
+                                  }
+                                },
+                                "Condition_2": {
+                                  "type": "If",
+                                  "expression": {
+                                    "and": [
+                                      {
+                                        "equals": [
+                                          "@body('Send_approval_email')?['SelectedOption']",
+                                          "This was me"
+                                        ]
+                                      }
+                                    ]
+                                  },
+                                  "actions": {
+                                    "Add_comment_to_incident_(V3)": {
+                                      "type": "ApiConnection",
+                                      "inputs": {
+                                        "host": {
+                                          "connection": {
+                                            "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                          }
+                                        },
+                                        "method": "post",
+                                        "body": {
+                                          "incidentArmId": "@triggerBody()?['object']?['id']",
+                                          "message": "<p> confirms they completed the action that triggered the alert. &nbsp;Closing the incident.</p>"
+                                        },
+                                        "path": "/Incidents/Comment"
+                                      }
+                                    },
+                                    "Update_incident": {
+                                      "type": "ApiConnection",
+                                      "inputs": {
+                                        "host": {
+                                          "connection": {
+                                            "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                          }
+                                        },
+                                        "method": "put",
+                                        "body": {
+                                          "incidentArmId": "@triggerBody()?['object']?['id']",
+                                          "status": "Closed",
+                                          "classification": {
+                                            "ClassificationAndReason": "BenignPositive - SuspiciousButExpected",
+                                            "ClassificationReasonText": "User Confirmed it was them"
+                                          }
+                                        },
+                                        "path": "/Incidents"
+                                      },
+                                      "runAfter": {
+                                        "Add_comment_to_incident_(V3)": [
+                                          "Succeeded"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "else": {
+                                    "actions": {
+                                      "Add_comment_to_incident_(V3)_2": {
+                                        "type": "ApiConnection",
+                                        "inputs": {
+                                          "host": {
+                                            "connection": {
+                                              "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                            }
+                                          },
+                                          "method": "post",
+                                          "body": {
+                                            "incidentArmId": "@triggerBody()?['object']?['id']",
+                                            "message": "<p> confirms they did not complete the action. Further investigation is needed.</p>"
+                                          },
+                                          "path": "/Incidents/Comment"
+                                        }
+                                      },
+                                      "Add_comment_to_incident_(V3)_3": {
+                                        "type": "ApiConnection",
+                                        "inputs": {
+                                          "host": {
+                                            "connection": {
+                                              "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                            }
+                                          },
+                                          "method": "post",
+                                          "body": {
+                                            "incidentArmId": "@triggerBody()?['object']?['id']",
+                                            "message": "<p>The soc team did not respond to the teams adaptive card request within 1 hour or skipped the request. Please take the manual action</p>"
+                                          },
+                                          "path": "/Incidents/Comment"
+                                        },
+                                        "runAfter": {
+                                          "Post_adaptive_card_and_wait_for_a_response": [
+                                            "TimedOut",
+                                            "Skipped"
+                                          ]
+                                        }
+                                      },
+                                      "Add_task_to_incident": {
+                                        "type": "ApiConnection",
+                                        "inputs": {
+                                          "host": {
+                                            "connection": {
+                                              "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                            }
+                                          },
+                                          "method": "post",
+                                          "body": {
+                                            "incidentArmId": "@body('Update_incident_2')?['id']",
+                                            "taskTitle": "Choose Response in Teams",
+                                            "taskDescription": "<p>The&nbsp;@{body('Parse_JSON')?['displayName']} user confirmed they did not complete the action the Soc Team will be asked to respond via Teams</p>"
+                                          },
+                                          "path": "/Incidents/CreateTask"
+                                        },
+                                        "runAfter": {
+                                          "Update_incident_2": [
+                                            "Succeeded"
+                                          ]
+                                        }
+                                      },
+                                      "Compose": {
+                                        "type": "Compose",
+                                        "inputs": {
+                                          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                                          "body": [
+                                            {
+                                              "size": "Large",
+                                              "text": "Take action on user incident created!",
+                                              "type": "TextBlock",
+                                              "wrap": true
+                                            },
+                                            {
+                                              "columns": [
+                                                {
+                                                  "items": [
+                                                    {
+                                                      "size": "Small",
+                                                      "style": "Person",
+                                                      "type": "Image",
+                                                      "url": "https://connectoricons-prod.azureedge.net/releases/v1.0.1391/1.0.1391.2130/azuresentinel/icon.png"
+                                                    },
+                                                    {
+                                                      "facts": [
+                                                        {
+                                                          "title": "User",
+                                                          "value": "@{body('Parse_JSON')?['displayName']}"
+                                                        },
+                                                        {
+                                                          "title": "Incident Title",
+                                                          "value": "@{triggerBody()?['object']?['properties']?['title']}"
+                                                        },
+                                                        {
+                                                          "title": "Incident ID",
+                                                          "value": "@{triggerBody()?['object']?['properties']?['incidentNumber']}"
+                                                        },
+                                                        {
+                                                          "title": "Incident Creation Time (UTC)",
+                                                          "value": "@{triggerBody()?['object']?['properties']?['createdTimeUtc']}"
+                                                        },
+                                                        {
+                                                          "title": "Severity",
+                                                          "value": "@{triggerBody()?['object']?['properties']?['severity']}"
+                                                        },
+                                                        {
+                                                          "title": "Incident Description",
+                                                          "value": "@{triggerBody()?['object']?['properties']?['description']}"
+                                                        }
+                                                      ],
+                                                      "type": "FactSet"
+                                                    }
+                                                  ],
+                                                  "type": "Column",
+                                                  "width": "stretch"
+                                                },
+                                                {
+                                                  "items": [
+                                                    {
+                                                      "text": "[Click here to view the Incident](@{body('Update_incident_2')?['properties']?['incidentUrl']})",
+                                                      "type": "TextBlock",
+                                                      "wrap": true
+                                                    }
+                                                  ],
+                                                  "type": "Column",
+                                                  "width": "stretch"
+                                                }
+                                              ],
+                                              "type": "ColumnSet"
+                                            },
+                                            {
+                                              "size": "Large",
+                                              "text": "The user has confirmed the actions were not performed by them!",
+                                              "type": "TextBlock",
+                                              "wrap": true
+                                            },
+                                            {
+                                              "size": "Medium",
+                                              "text": "Choose an Action below",
+                                              "type": "TextBlock",
+                                              "wrap": true
+                                            },
+                                            {
+                                              "choices": [
+                                                {
+                                                  "title": "Confirm User Compromised",
+                                                  "value": "Confirm"
+                                                },
+                                                {
+                                                  "title": "Dismiss User Risk",
+                                                  "value": "Dismiss"
+                                                },
+                                                {
+                                                  "title": "Reset AAD Password",
+                                                  "value": "Reset"
+                                                }
+                                              ],
+                                              "id": "Action",
+                                              "placeholder": "Select an Option",
+                                              "type": "Input.ChoiceSet"
+                                            },
+                                            {
+                                              "actions": [
+                                                {
+                                                  "title": "Submit Response!",
+                                                  "type": "Action.Submit"
+                                                }
+                                              ],
+                                              "type": "ActionSet"
+                                            }
+                                          ],
+                                          "type": "AdaptiveCard",
+                                          "version": "1.2"
+                                        },
+                                        "runAfter": {
+                                          "Add_task_to_incident": [
+                                            "Succeeded"
+                                          ]
+                                        }
+                                      },
+                                      "Confirm": {
+                                        "type": "If",
+                                        "expression": {
+                                          "or": [
+                                            {
+                                              "equals": [
+                                                "@body('Post_Adaptive_Card_and_wait_for_a_response')?['data']?['Action']",
+                                                "Confirm"
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        "actions": {
+                                          "Add_comment_to_incident_(V3)_5": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                              "host": {
+                                                "connection": {
+                                                  "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                                }
+                                              },
+                                              "method": "post",
+                                              "body": {
+                                                "incidentArmId": "@triggerBody()?['object']?['id']",
+                                                "message": "<p>The user risk was confirmed by the Soc Team</p>"
+                                              },
+                                              "path": "/Incidents/Comment"
+                                            },
+                                            "runAfter": {
+                                              "Confirm_User_Risk": [
+                                                "Succeeded"
+                                              ]
+                                            }
+                                          },
+                                          "Confirm_User_Risk": {
+                                            "type": "Http",
+                                            "inputs": {
+                                              "uri": "https://graph.microsoft.com/v1.0/identityProtection/riskyUsers/confirmCompromised",
+                                              "method": "POST",
+                                              "body": {
+                                                "userIds": [
+                                                  "@{body('Parse_JSON')?['id']}"
+                                                ]
+                                              },
+                                              "authentication": {
+                                                "audience": "https://graph.microsoft.com/",
+                                                "type": "ManagedServiceIdentity"
+                                              }
+                                            }
+                                          },
+                                          "Mark_a_task_as_completed_3": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                              "host": {
+                                                "connection": {
+                                                  "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                                }
+                                              },
+                                              "method": "post",
+                                              "body": {
+                                                "taskArmId": "@body('Add_task_to_incident')?['id']"
+                                              },
+                                              "path": "/Incidents/CompleteTask"
+                                            },
+                                            "runAfter": {
+                                              "Add_comment_to_incident_(V3)_5": [
+                                                "Succeeded"
+                                              ]
+                                            }
+                                          }
+                                        },
+                                        "else": {
+                                          "actions": {}
+                                        },
+                                        "runAfter": {
+                                          "Post_adaptive_card_and_wait_for_a_response": [
+                                            "Succeeded"
+                                          ]
+                                        }
+                                      },
+                                      "Dismiss": {
+                                        "type": "If",
+                                        "expression": {
+                                          "or": [
+                                            {
+                                              "equals": [
+                                                "@ body('Post_Adaptive_Card_and_wait_for_a_response')?['data']?['Action']",
+                                                "Dismiss"
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        "actions": {
+                                          "Add_comment_to_incident_(V3)_7": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                              "host": {
+                                                "connection": {
+                                                  "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                                }
+                                              },
+                                              "method": "post",
+                                              "body": {
+                                                "incidentArmId": "@triggerBody()?['object']?['id']",
+                                                "message": "<p>The user risk was dismissed by the Soc Team</p>"
+                                              },
+                                              "path": "/Incidents/Comment"
+                                            },
+                                            "runAfter": {
+                                              "HTTP_2": [
+                                                "Succeeded"
+                                              ]
+                                            }
+                                          },
+                                          "HTTP_2": {
+                                            "type": "Http",
+                                            "inputs": {
+                                              "uri": "https://graph.microsoft.com/v1.0/identityProtection/riskyUsers/dismiss",
+                                              "method": "POST",
+                                              "body": {
+                                                "userIds": [
+                                                  "@{body('Parse_JSON')?['id']}"
+                                                ]
+                                              },
+                                              "authentication": {
+                                                "audience": "https://graph.microsoft.com/",
+                                                "type": "ManagedServiceIdentity"
+                                              }
+                                            }
+                                          },
+                                          "Mark_a_task_as_completed_2": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                              "host": {
+                                                "connection": {
+                                                  "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                                }
+                                              },
+                                              "method": "post",
+                                              "body": {
+                                                "taskArmId": "@body('Add_task_to_incident')?['id']"
+                                              },
+                                              "path": "/Incidents/CompleteTask"
+                                            },
+                                            "runAfter": {
+                                              "Add_comment_to_incident_(V3)_7": [
+                                                "Succeeded"
+                                              ]
+                                            }
+                                          }
+                                        },
+                                        "else": {
+                                          "actions": {}
+                                        },
+                                        "runAfter": {
+                                          "Post_adaptive_card_and_wait_for_a_response": [
+                                            "Succeeded"
+                                          ]
+                                        }
+                                      },
+                                      "Post_adaptive_card_and_wait_for_a_response": {
+                                        "type": "ApiConnectionWebhook",
+                                        "inputs": {
+                                          "host": {
+                                            "connection": {
+                                              "name": "@parameters('$connections')['teams']['connectionId']"
+                                            }
+                                          },
+                                          "body": {
+                                            "notificationUrl": "@{listCallbackUrl()}",
+                                            "body": {
+                                              "messageBody": "@{outputs('Compose')}",
+                                              "updateMessage": "Thanks for your response!"
+                                            }
+                                          },
+                                          "path": "/v1.0/teams/conversation/gatherinput/poster/Flow bot/location/@{encodeURIComponent('Channel')}/$subscriptions"
+                                        },
+                                        "runAfter": {
+                                          "Compose": [
+                                            "Succeeded"
+                                          ]
+                                        },
+                                        "limit": {
+                                          "timeout": "PT1H"
+                                        }
+                                      },
+                                      "Reset": {
+                                        "type": "If",
+                                        "expression": {
+                                          "or": [
+                                            {
+                                              "equals": [
+                                                "@body('Post_Adaptive_Card_and_wait_for_a_response')?['data']?['Action']",
+                                                "Reset"
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        "actions": {
+                                          "Add_comment_to_incident_(V3)_6": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                              "host": {
+                                                "connection": {
+                                                  "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                                }
+                                              },
+                                              "method": "post",
+                                              "body": {
+                                                "incidentArmId": "@triggerBody()?['object']?['id']",
+                                                "message": "<p>The user has been forced to change their password at next login and the session has been revoked by the Soc Team</p>"
+                                              },
+                                              "path": "/Incidents/Comment"
+                                            },
+                                            "runAfter": {
+                                              "Revoke_users_session": [
+                                                "Succeeded"
+                                              ]
+                                            }
+                                          },
+                                          "Force_password_reset_at_next_login": {
+                                            "type": "Http",
+                                            "inputs": {
+                                              "uri": "https://graph.microsoft.com/v1.0/users/@{body('Parse_JSON')?['id']}",
+                                              "method": "PATCH",
+                                              "body": {
+                                                "passwordProfile": {
+                                                  "forceChangePasswordNextSignIn": true
+                                                }
+                                              },
+                                              "authentication": {
+                                                "audience": "https://graph.microsoft.com/",
+                                                "type": "ManagedServiceIdentity"
+                                              }
+                                            }
+                                          },
+                                          "Mark_a_task_as_completed": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                              "host": {
+                                                "connection": {
+                                                  "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                                }
+                                              },
+                                              "method": "post",
+                                              "body": {
+                                                "taskArmId": "@body('Add_task_to_incident')?['id']"
+                                              },
+                                              "path": "/Incidents/CompleteTask"
+                                            },
+                                            "runAfter": {
+                                              "Add_comment_to_incident_(V3)_6": [
+                                                "Succeeded"
+                                              ]
+                                            }
+                                          },
+                                          "Revoke_users_session": {
+                                            "type": "Http",
+                                            "inputs": {
+                                              "uri": "https://graph.microsoft.com/v1.0/users/@{body('Parse_JSON')?['id']}/revokeSignInSessions",
+                                              "method": "POST",
+                                              "authentication": {
+                                                "audience": "https://graph.microsoft.com/",
+                                                "type": "ManagedServiceIdentity"
+                                              }
+                                            },
+                                            "runAfter": {
+                                              "Force_password_reset_at_next_login": [
+                                                "Succeeded"
+                                              ]
+                                            }
+                                          }
+                                        },
+                                        "else": {
+                                          "actions": {}
+                                        },
+                                        "runAfter": {
+                                          "Post_adaptive_card_and_wait_for_a_response": [
+                                            "Succeeded"
+                                          ]
+                                        }
+                                      },
+                                      "Update_incident_2": {
+                                        "type": "ApiConnection",
+                                        "inputs": {
+                                          "host": {
+                                            "connection": {
+                                              "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                            }
+                                          },
+                                          "method": "put",
+                                          "body": {
+                                            "incidentArmId": "@triggerBody()?['object']?['id']",
+                                            "tagsToAdd": {
+                                              "TagsToAdd": [
+                                                {
+                                                  "Tag": "ActionNotByUser"
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "path": "/Incidents"
+                                        },
+                                        "runAfter": {
+                                          "Add_comment_to_incident_(V3)_2": [
+                                            "Succeeded"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "runAfter": {
+                                    "Send_approval_email": [
+                                      "Succeeded"
+                                    ]
+                                  }
+                                },
+                                "Select_Alerts": {
+                                  "type": "Select",
+                                  "inputs": {
+                                    "from": "@triggerBody()?['object']?['properties']?['Alerts']",
+                                    "select": {
+                                      "Name": "@{item()?['properties']?['alertDisplayName']}",
+                                      "Time Generated": "@{item()?['properties']?['timeGenerated']}",
+                                      "Description": "@{item()?['properties']?['description']}"
+                                    }
+                                  },
+                                  "runAfter": {
+                                    "Parse_JSON": [
+                                      "Succeeded"
+                                    ]
+                                  }
+                                },
+                                "Create_Alerts_HTML_table": {
+                                  "type": "Table",
+                                  "inputs": {
+                                    "from": "@body('Select_Alerts')",
+                                    "format": "HTML"
+                                  },
+                                  "runAfter": {
+                                    "Select_Alerts": [
+                                      "SUCCEEDED"
+                                    ]
+                                  }
+                                }
+                              }
+                            },
+                            "runAfter": {
+                              "Increment_Number_of_Users_Variable": [
+                                "Succeeded"
+                              ]
+                            }
+                          },
+                          "Increment_Number_of_Users_Variable": {
+                            "type": "IncrementVariable",
+                            "inputs": {
+                              "name": "NumberOfUsers",
+                              "value": 1
+                            }
+                          }
+                        },
+                        "runAfter": {
+                          "Initialize_Number_Of_Users_Variable": [
+                            "Succeeded"
+                          ]
+                        }
+                      },
+                      "Initialize_Number_Of_Users_Variable": {
+                        "type": "InitializeVariable",
+                        "inputs": {
+                          "variables": [
+                            {
+                              "name": "NumberOfUsers",
+                              "type": "integer",
+                              "value": 0
+                            }
+                          ]
+                        },
+                        "runAfter": {
+                          "Entities_-_Get_Accounts": [
+                            "Succeeded"
+                          ]
+                        }
+                      }
+                    },
+                    "parameters": {
+                      "$connections": {
+                        "type": "Object",
+                        "defaultValue": {}
+                      }
+                    }
+                  },
+                "parameters": {
+                    "$connections": {
+                        "value": {
+                            "azuread": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', variables('azuread'))]",
+                                "connectionName": "[variables('azuread')]",
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuread')]"
+                            },
+                            "azuresentinel": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', variables('azuresentinel'))]",
+                                "connectionName": "[variables('azuresentinel')]",
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                                "connectionProperties": {
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity"
+                                    }
+                                }
+                            },
+							 "office365": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', variables('office365'))]",
+                                "connectionName": "[variables('office365')]",
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]"
+                            },
+                            "teams": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', variables('teams'))]",
+                                "connectionName": "[variables('teams')]",
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/teams')]"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}
