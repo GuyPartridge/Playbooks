@@ -10,7 +10,9 @@ Run this playbook on incidents which contains suspicious AAD activities. When a 
 ## Prerequisites
 1. Using the riskyUsers API requires an Azure AD Premium P2 license. 
 2. Have a managed identity which has the following permissions:
+
 a) User Admin role AAD Role is required to reset the passwords and sessions. Note that the user admin cannot reset privileged users to do this assign the Privileged Role Administrator role.
+
 b) The graph API permissions
 "User.Read.All"
 "User.ReadWrite.All"
